@@ -21,6 +21,8 @@ Panels:
   - Class: rviz/Views
     Expanded:
       - /Current View1
+      - /x-axis1
+      - /x-axis1/Focal Point1
       - /y-axis1/Focal Point1
     Name: Views
     Splitter Ratio: 0.5
@@ -122,7 +124,7 @@ Visualization Manager:
       Visual Enabled: true
     - Class: rviz/Image
       Enabled: true
-      Image Topic: /usb_cam/image
+      Image Topic: /usb_cam/image_raw
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -137,7 +139,7 @@ Visualization Manager:
       Marker Topic: projection
       Name: Marker
       Namespaces:
-        robot: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -255,25 +257,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/XYOrbit
-      Distance: 1.75
+      Distance: 1.4077051877975464
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.2985752820968628
-        Y: 0
-        Z: -0.20000000298023224
+        X: 0.3774400055408478
+        Y: -0.10000000149011612
+        Z: 0
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3747953772544861
+      Pitch: 0.6000000238418579
       Target Frame: <Fixed Frame>
       Value: XYOrbit (rviz)
-      Yaw: 0.005389575846493244
+      Yaw: 4.713565349578857
     Saved:
       - Class: rviz/XYOrbit
         Distance: 1.4077051877975464
@@ -283,15 +285,15 @@ Visualization Manager:
           Swap Stereo Eyes: false
           Value: false
         Focal Point:
-          X: 0.3774367570877075
-          Y: -0.3620043992996216
+          X: 0.3774400055408478
+          Y: -0.10000000149011612
           Z: 0
         Focal Shape Fixed Size: true
         Focal Shape Size: 0.05000000074505806
         Invert Z Axis: false
         Name: x-axis
         Near Clip Distance: 0.009999999776482582
-        Pitch: 0.17979566752910614
+        Pitch: 0.6000000238418579
         Target Frame: <Fixed Frame>
         Value: XYOrbit (rviz)
         Yaw: 4.713565349578857
@@ -303,7 +305,7 @@ Visualization Manager:
           Swap Stereo Eyes: false
           Value: false
         Focal Point:
-          X: 0.2985752820968628
+          X: 0.30000001192092896
           Y: 0
           Z: -0.20000000298023224
         Focal Shape Fixed Size: true
