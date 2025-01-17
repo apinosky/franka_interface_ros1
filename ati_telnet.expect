@@ -1,0 +1,38 @@
+#!/usr/bin/expect
+# argument for camera should be 3.75 and gelsight should be 2.75
+# to exit, type "^]" then "quit"
+
+#If it all goes pear shaped the script will timeout after 2 seconds.
+set timeout 2
+#First argument is assigned to the variable name
+set name 192.168.0.2
+#Second argument is assigned to the variable user
+set user ati
+#Third argument is assigned to the variable password
+set password ati7720115
+#This spawns the telnet program and connects it to the variable name
+spawn telnet $name
+#The script expects login
+expect "Login:"
+#The script sends the user variable
+send "$user\r"
+#The script expects Password
+expect "Password:"
+#The script sends the password variable
+send "$password\r"
+expect ">"
+#The script sends the command
+send "set ttdz [lindex $argv 0]\r"
+expect ">"
+send "BIAS OFF\r"
+expect ">"
+send "BIAS ON\r"
+expect ">"
+#This hands control of the keyboard over to you (Nice expect feature!)
+# interact
+# Send special ^] to telnet so we can tell telnet to quit.
+# expect ">"
+# send "^]\n"
+# expect "telnet>"
+# send "quit\r"
+# expect eof

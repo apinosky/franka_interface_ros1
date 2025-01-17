@@ -1,0 +1,20 @@
+<?xml version="1.0" ?>
+
+<launch>
+    
+    <arg name="img_name" value="/ultrasound/image" />
+    <arg name="use_websocket" default="False" />
+
+    <group if="$(arg use_websocket)">
+        <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+        <arg name="unregister_timeout" value="10000" /> <!-- otherise the websocket won't let the roslibpy nodes reconnect-->
+        </include>
+
+        <node name="republish" type="republish" pkg="image_transport" output="screen" args="compressed in:=$(arg img_name) raw out:=/usb_cam/image"/>
+    </group>
+    <group unless="$(arg use_websocket)">
+        <node name="ultrasound_subscriber" pkg="franka_interface_ros1" type="ultrasound_subscriber" respawn="false" output="screen" required="True"/>
+        <node name="republish" type="republish" pkg="image_transport" output="screen" args="compressed in:=$(arg img_name) raw out:=/usb_cam/image"/>
+    </group>
+
+</launch>

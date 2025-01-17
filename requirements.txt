@@ -1,0 +1,9 @@
+-f https://developer.intel.com/ipex-whl-stable-xpu
+matplotlib==3.4.3
+numpy #==1.21.4
+numba
+opencv-python-headless #==4.5.5
+psutil #==5.8.0
+PyYAML #==6.0
+scipy #==1.7.3
+termcolor #==2.2.0

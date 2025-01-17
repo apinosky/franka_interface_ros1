@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+
+import cv2
+import numpy as np
+import rospy
+from sensor_msgs.msg import Image, CompressedImage
+from cv_bridge import CvBridge, CvBridgeError
+from std_msgs.msg import Empty
+import time
+
+def flat_field_correction(f0, img, counter, num_init_frames, KJ):
+
+    h,w = img.shape[0], img.shape[1]
+
+    mean = np.mean(f0, axis=0)
+    J = img / mean
+
+    # imgffc[:,:,0] = (imgffc[:,:,0] - imgffc[:,:,0].min())/ (imgffc[:,:,0].max() - imgffc[:,:,0].min())
+    # imgffc[:, :, 1] = (imgffc[:, :, 1] - imgffc[:, :, 1].min()) / (imgffc[:, :, 1].max() - imgffc[:, :, 1].min())
+    # imgffc[:, :, 2] = (imgffc[:, :, 2] - imgffc[:, :, 2].min()) / (imgffc[:, :, 2].max() - imgffc[:, :, 2].min())
+
+    J_min = np.tile(np.min(np.min(J, axis=1), axis=0).reshape(1,-1),(h,w,1))
+    J_max = np.tile(np.max(np.max(J, axis=1), axis=0).reshape(1,-1),(h,w,1))
+
+    R = (J - J_min) / (J_max - J_min)
+    aa = np.sum(np.sum(J, axis=1), axis=0) / np.sum(np.sum(R, axis=1), axis=0)
+    K = np.tile(aa.reshape(1,-1),(h,w,1))
+    J = K*R
+
+    if counter==num_init_frames:
+        KJ = np.round(np.mean(255 / np.max(np.max(J, axis=1), axis=0).reshape(1, -1)))
+
+    J = KJ * J
+    J[J<0] = 0
+    J[J>255] = 255
+
+    return J.astype('uint8'), KJ
+
+
+def get_diff_img_2(img1, img2):
+    return (img1 * 1.0 - img2) / 255.  +  0.5
+
+
+class WebcamVideoStream :
+    def __init__(self, src) :
+        self.stream = cv2.VideoCapture(src,cv2.CAP_V4L)
+        out = self.stream.read()
+        self.src = src
+
+    def read(self) :
+        try:
+            return self.stream.read()
+        except:
+            return (False, None)
+
+    def stop(self) :
+        self.stream.release()
+
+    def restart(self):
+        print('restarting',self.stream.isOpened())
+        try:
+            isopen=self.stream.open(self.src,cv2.CAP_V4L)
+        except:
+            isopen=False
+        return not isopen
+
+    def __exit__(self, exc_type, exc_value, traceback) :
+        self.stream.release()
+
+
+def chop_border_resize(img,chop_border_size = 0):
+    img = img[chop_border_size:- chop_border_size, chop_border_size:- chop_border_size]
+    img = cv2.resize(img, (imgw, imgh))
+    return img
+
+
+
+if __name__ == '__main__':
+
+    rospy.init_node('gelsight_cams', anonymous=True)
+    pause_pub = rospy.Publisher('/pause',Empty,queue_size=1)
+    resume_pub = rospy.Publisher('/resume',Empty,queue_size=1)
+
+    cvbridge = CvBridge()
+    imgh = 180 # 240
+    imgw = 360 # 320
+    chop_border_size = 200
+    NUM_SENSORS = rospy.get_param('num_gelsight_sensors', 1)
+    rate = rospy.get_param('fps', 50)
+    debug = False
+    publish_raw = False
+
+
+    gs = {}
+    gs['img'] = [0] * NUM_SENSORS
+    gs['gsmini_pub'] = [0] * NUM_SENSORS
+    gs['gsmini_pub_compressed'] = [0] * NUM_SENSORS
+    gs['vs'] = [0] * NUM_SENSORS
+
+    # import os
+    # if os.path.exists('/dev/video2'):
+    #     offset = 2
+    # else:
+    offset = -1
+
+    for idx in range(NUM_SENSORS):
+        if publish_raw:
+            gs['gsmini_pub'][idx] = rospy.Publisher("/gsmini_rawimg_{}".format(idx), Image, queue_size=1)
+        gs['gsmini_pub_compressed'][idx] = rospy.Publisher("/gsmini_rawimg_{}/compressed".format(idx), CompressedImage, queue_size=1)
+        gs['vs'][idx] = WebcamVideoStream(src=2*idx + offset) # make sure the id numbers are ones recognized by the computer. Default, 2 and 4
+
+
+    r = rospy.Rate(rate)  # hz
+    error = False
+    while not rospy.is_shutdown() and not error:
+        for idx in range(NUM_SENSORS):
+            grabbed, gs['img'][idx] = gs['vs'][idx].read()
+            if not grabbed:
+                pause_pub.publish()
+                # print('got error')
+                num_respawn_attempts = 0
+                # print('trying to restart')
+                error = True
+                while num_respawn_attempts < 50 and error:
+                    error = gs['vs'][idx].restart()
+                    if error:
+                        print('num_respawn_attempts',num_respawn_attempts)
+                        time.sleep(0.05)
+                        num_respawn_attempts += 1
+                if error:
+                    print('restart failed -- killing node')
+                else:
+                    grabbed, gs['img'][idx] = gs['vs'][idx].read()
+                    if grabbed: 
+                        resume_pub.publish()
+            if not error and grabbed:
+                # gs['img'][idx] = cv2.resize(gs['img'][idx], (imgw,imgh))
+                gs['img'][idx] = chop_border_resize(gs['img'][idx],chop_border_size=chop_border_size)
+
+                if debug:
+                    cv2.namedWindow('Gelsight', cv2.WINDOW_AUTOSIZE)
+                    cv2.imshow('Gelsight', gs['img'][idx])
+                    cv2.waitKey(1)
+
+                if publish_raw:
+                    img_msg = cvbridge.cv2_to_imgmsg(gs['img'][idx], encoding="passthrough")
+                    img_msg.header.stamp = rospy.Time.now()
+                    img_msg.header.frame_id = 'map'
+                    gs['gsmini_pub'][idx].publish(img_msg)
+
+                img_msg_compressed = cvbridge.cv2_to_compressed_imgmsg(gs['img'][idx])
+                img_msg_compressed.header.stamp = rospy.Time.now()
+                img_msg_compressed.header.frame_id = 'map'
+                gs['gsmini_pub_compressed'][idx].publish(img_msg_compressed)
+
+        r.sleep()
+
+    for idx in range(NUM_SENSORS):
+        gs['vs'][idx].stop()
+
+    cv2.destroyAllWindows()
+    print('done')

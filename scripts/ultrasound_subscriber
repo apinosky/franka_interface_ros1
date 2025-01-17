@@ -1,0 +1,67 @@
+#!/usr/bin/env python
+
+import imagezmq
+import matplotlib.pyplot as plt
+import numpy as np
+import rospy 
+from sensor_msgs.msg import Image, CompressedImage
+from std_msgs.msg import Empty
+import time
+
+render = False
+publish_raw = False
+
+if __name__ == '__main__':
+
+    rospy.init_node('ultrasound_publisher', anonymous=True)
+    if publish_raw: 
+        ultrasound_pub = rospy.Publisher("/ultrasound/image", Image, queue_size=1)
+    else:
+        ultrasound_pub = rospy.Publisher("/ultrasound/image/compressed", CompressedImage, queue_size=1)
+        
+    address = '192.168.0.102'
+    port = 9090
+
+    image_hub = imagezmq.ImageHub(open_port=f'tcp://{address}:{port}', REQ_REP = False)
+
+    if render: 
+        fig,ax= plt.subplots(1,1,figsize=(12,12))
+        us_img = ax.imshow(np.zeros((180,180,3)))
+        ax.axes.xaxis.set_visible(False)
+        ax.axes.yaxis.set_visible(False)
+        fig.tight_layout()
+        plt.ion()
+        plt.show(block=False)
+        fig.canvas.blit(fig.bbox)
+    else: 
+        from cv_bridge import CvBridge, CvBridgeError
+        cvbridge = CvBridge()
+        
+
+    error = False
+    r = rospy.Rate(20)
+    while not rospy.is_shutdown() and not error:
+        info, image = image_hub.recv_image()
+
+
+        if render: 
+            us_img.set_data(image[:,:,:3])
+            us_img.autoscale()
+            fig.canvas.blit(fig.bbox)
+            fig.canvas.flush_events()
+        elif publish_raw: 
+            img_msg = cvbridge.cv2_to_imgmsg(image, encoding="passthrough")
+            img_msg.header.stamp = rospy.Time.now()
+            img_msg.header.frame_id = 'ultrasound'
+            ultrasound_pub.publish(img_msg)
+        else: 
+            img_msg = cvbridge.cv2_to_compressed_imgmsg(image)
+            img_msg.header.stamp = rospy.Time.now()
+            img_msg.header.frame_id = 'ultrasound'
+            ultrasound_pub.publish(img_msg)
+
+        r.sleep()
+
+
+
+    print('done')

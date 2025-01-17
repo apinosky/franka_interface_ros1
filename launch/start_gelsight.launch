@@ -1,0 +1,14 @@
+<?xml version="1.0" ?>
+
+<launch>
+    <arg name="pybullet" default="false" />
+    
+    <arg name="img_name" value="/gsmini_rawimg_0" />
+
+    <node name="gelsight_publisher" pkg="franka_interface_ros1" type="gelsight_publisher" respawn="false" output="screen" required="True"/>
+
+    <node name="republish" type="republish" pkg="image_transport" output="screen" args="compressed in:=$(arg img_name) raw out:=/usb_cam/image" unless="$(arg pybullet)"/>
+
+    <node name="republish2" type="republish" pkg="image_transport" output="screen" args="compressed in:=$(arg img_name) raw out:=/usb_cam/image_raw"/>
+
+</launch>
