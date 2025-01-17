@@ -23,6 +23,7 @@ import copy
 from scipy.spatial.transform import Rotation
 from visualization_msgs.msg import Marker
 from std_msgs.msg import Empty, ColorRGBA, Header
+import matplotlib.pyplot as plt
 
 class replay_txt():
     def __init__(self):
@@ -30,8 +31,8 @@ class replay_txt():
         # params
         self.states = 'xy'
         self.robot_lim = np.array([[-1.0, 1.0]]*2) # x,y
-        tray_center = np.array([[0.478],[0.]]) # x,y
-        offset = 0.2
+        tray_center = np.array([[0.475],[0.]]) # x,y
+        offset = 0.15
         self.rate = 2.5*0.2/offset
         self.tray_lim = tray_center+np.array([-1.,1.])*offset
         # self.tray_lim = np.array([[0.325, 0.625], # x
@@ -320,25 +321,46 @@ if __name__ == '__main__':
     use_vel = False
     poses = np.genfromtxt(args.traj_file, delimiter=',')
     rate = rospy.Rate(replay.rate)
+    start_pose = poses[0].copy()
+
+    # plotting
+    fig,axs = plt.subplots(1,1)
+    axs.plot(*poses.T,lw=5,zorder=1)
+    axs.set_xlim([-1,1])
+    axs.set_ylim([-1,1])
+    axs.set_aspect('equal', adjustable='box')
+    current_pose = axs.plot(*start_pose,'ks',zorder=10)
+    plt.ion()
+    plt.show(block=False)
+
+    def update_fig(pose=None):
+        if pose is not None: 
+            current_pose[0].set_data(*pose)
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+
+    update_fig()
 
     # go to start pose (high z)
     replay.pos_init.z = args.z_high
-    start_pose = poses[0].copy()
     error = replay.step(start_pose)
     replay.check_goal_pos(start_pose)
     print('lowering ee')
+    update_fig()
 
     # go to start pose (low z)
     replay.pos_init.z = args.z_contact
     error = replay.step(start_pose)
     replay.check_goal_pos(start_pose)
     print('starting trajectory')
+    update_fig()
 
     # run trajectory
     for pose in poses:
         while replay.pause:
             rate.sleep()
         error = replay.step(pose)
+        update_fig(pose)
         rate.sleep()
 
         if rospy.is_shutdown():
@@ -347,4 +369,7 @@ if __name__ == '__main__':
     # lift back up when done
     replay.pos_init.z = args.z_high
     error = replay.step(pose)
+
+    # cleanup
+    plt.close(fig)
 
