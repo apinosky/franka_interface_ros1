@@ -29,6 +29,7 @@ class testGUI():
         self.tare_pub = rospy.ServiceProxy('/Bias_sensor', EmptyService)
         self.reset_pub = rospy.Publisher('/reset',Empty,queue_size=1)
         self.reset_joints_pub = rospy.Publisher('/reset_joints',Empty,queue_size=1)
+        self.picture_joints_pub = rospy.Publisher('/picture_joints',Empty,queue_size=1)
         self.reset_ctrls_pub = rospy.Publisher('/reset_control_commands',Empty,queue_size=1)
         self.pause_pub = rospy.Publisher('/pause',Empty,queue_size=1)
         self.gui_pause_pub = rospy.Publisher('/gui_pause',Empty,queue_size=1,latch=False)
@@ -72,8 +73,11 @@ class testGUI():
         ctrls = tk.Label(self.root, text="ROBOT",font=myFont)
         ctrls.grid(row=2,column=0, columnspan = 4, pady=3)
 
-        self.buttons.reset = tk.Button(self.root, text="RESET EE", command=self.reset,bg='#FF7F50',font=myFont,width=6)
-        self.buttons.reset.grid(row=4,column=2, padx=5, pady=5, columnspan = 2)
+        # self.buttons.reset = tk.Button(self.root, text="RESET EE", command=self.reset,bg='#FF7F50',font=myFont,width=6)
+        # self.buttons.reset.grid(row=4,column=2, padx=5, pady=5, columnspan = 2)
+
+        self.buttons.picture = tk.Button(self.root, text="PIC JNTS", command=self.picture,bg='#FF8F50',font=myFont,width=6)
+        self.buttons.picture.grid(row=4,column=2, padx=5, pady=5, columnspan = 2)
 
         self.buttons.reset_joints = tk.Button(self.root, text="RESET JNTS", command=self.reset_joints,bg='#FF7F50',font=myFont,width=8)
         self.buttons.reset_joints.grid(row=4,column=0, padx=5, pady=5, columnspan = 3)
@@ -176,17 +180,29 @@ class testGUI():
         self.recover_pub.publish()
         cprint("[GUI] "+"sending error recovery message","grey","on_yellow")
 
+    def disable_all_resets(self): 
+        # self.disable_button(self.buttons.reset)
+        self.disable_button(self.buttons.picture)
+        self.disable_button(self.buttons.reset_joints)
+        # threading.Timer( 3 , self.enable_button, args=[self.buttons.reset]).start() # blocks calling again for 3 seconds
+        threading.Timer( 3 , self.enable_button, args=[self.buttons.picture]).start() # blocks calling again for 3 seconds
+        threading.Timer( 3 , self.enable_button, args=[self.buttons.reset_joints]).start() # blocks calling again for 3 seconds
+
+
     def reset(self):
-        self.disable_button(self.buttons.reset)
+        self.disable_all_resets()
         self.reset_pub.publish()
         cprint("[GUI] "+"sending reset message","grey","on_yellow")
-        threading.Timer( 3 , self.enable_button, args=[self.buttons.reset]).start() # blocks calling again for 3 seconds
+
+    def picture(self):
+        self.disable_all_resets()
+        self.picture_joints_pub.publish()
+        cprint("[GUI] "+"sending reset to picture joints message","grey","on_yellow")
 
     def reset_joints(self):
-        self.disable_button(self.buttons.reset_joints)
+        self.disable_all_resets()
         self.reset_joints_pub.publish()
         cprint("[GUI] "+"sending reset joints message","grey","on_yellow")
-        threading.Timer( 3 , self.enable_button, args=[self.buttons.reset_joints]).start() # blocks calling again for 3 seconds
 
     def reset_ctrls(self):
         self.reset_ctrls_pub.publish()
