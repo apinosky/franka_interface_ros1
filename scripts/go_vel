@@ -21,8 +21,10 @@ class Move(object):
         ## set impedance before starting controllers
         self.set_impedance = rospy.ServiceProxy('/franka_control/set_cartesian_impedance',SetCartesianImpedance)
         self.set_ee_frame = rospy.ServiceProxy('/franka_control/set_EE_frame',SetEEFrame)
-        self.home =  [0.012480725393758803, -0.29768355590877604, -0.009472851066853595, -2.0784466000166155, -0.006375518157533217, 1.792500004072647, 0.3851315747952818]
-        # self.home =  [0.012480725393758803, -0.29768355590877604, -0.009472851066853595, -2.0784466000166155, -0.006375518157533217, 1.792500004072647, -0.7737304602066702] # for gelsight
+        # self.home =  [0.012480725393758803, -0.29768355590877604, -0.009472851066853595, -2.0784466000166155, -0.006375518157533217, 1.792500004072647, 0.3851315747952818]
+        # self.home =  [0.012480725393758803, -0.29768355590877604, -0.009472851066853595, -2.0784466000166155, -0.006375518157533217, 1.792500004072647, -0.7267767830332299] # for gelsight
+        self.home = [0.010801583325441448, -0.1771056256588878, -0.007870263377723731, -2.3571392011775996, -0.003173519852776724, 2.1735444090075338, -0.7759436045090357]
+        self.picture = [0.009197830900811313, -0.22759583224101443, 0.011046276312345674, -1.2321280225787246, 0.0056930255658452274, 1.0186229640907711, -0.709287430645691]
         # ee_impedance = [2000, 2000, 2000, 100, 100, 100] # stiff
         # ee_impedance = [200, 200, 200, 10, 10, 10] # compliant
         # success = self.set_impedance(ee_impedance) # state limits are [10,3000], angle limits are [1,300]
@@ -53,13 +55,14 @@ class Move(object):
         rospy.Subscriber('/switch_to_pose_controller',Empty, self.switch_pose_controller_callback)
         rospy.Subscriber('/switch_to_vel_controller',Empty, self.switch_vel_controller_callback)
         rospy.Subscriber('/reset_joints',Empty, self.resetJointsCallback)
+        rospy.Subscriber('/picture_joints',Empty, self.pictureJointsCallback)
 
         self.start_pose = Transform()
         self.start_pose.translation.x = 0.475# 0.5 # 0.577663
         self.start_pose.translation.y = 0.0 # 0.1 # 0.0917118
         self.start_pose.translation.z = 0.4 # 0.415 # 0.370351
-        self.start_pose.rotation = Quaternion(*tf.transformations.quaternion_from_euler(pi, 0.,-pi/8))
-        # self.start_pose.rotation = Quaternion(*tf.transformations.quaternion_from_euler(pi, 0.,pi/4)) # gelsight
+        # self.start_pose.rotation = Quaternion(*tf.transformations.quaternion_from_euler(pi, 0.,-pi/8))
+        self.start_pose.rotation = Quaternion(*tf.transformations.quaternion_from_euler(pi, 0.,pi/4)) # gelsight
         rospy.Subscriber('/set_new_reset_xyz',Point, self.set_new_reset_xyz)
 
         self.brightness_pub = rospy.Publisher('/update_brightness',Float32,queue_size=1,latch=False)
@@ -148,6 +151,14 @@ class Move(object):
             rospy.sleep(5.)
             self.start_controller(old_ctrller)
 
+
+    def pictureJointsCallback(self,msg):
+        old_ctrller = self.controller_mode
+        with self.mode_lock:
+            self.start_controller('joint')
+            out = self.cmd_service(self.picture)
+            rospy.sleep(5.)
+            self.start_controller(old_ctrller)
 
     def velCallback(self,msg):
         if msg.desired_brightness >= 0:

@@ -53,8 +53,8 @@ namespace franka_interface_ros1 {
         std::array<double, 16> filtered_raw_pose_cmd {};
         std::array<double, 16> filtered_target_cmd {};
 
-        float alpha1   = 0.999;
-        float alpha2   = 0.99;
+        float alpha1;
+        float alpha2;
 
         ros::Subscriber     force_sub;
         bool                use_external_fts = false;

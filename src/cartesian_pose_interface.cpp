@@ -146,6 +146,12 @@ namespace franka_interface_ros1 {
                 }
               }
               if (update) {
+                // double diff = abs(raw_pose_cmd[i] - filtered_raw_pose_cmd[i]);
+                // if ( diff > 0.001){
+                //   alpha1 = 0.999;
+                // } else {
+                //   alpha1 = diff*0.999*1000;
+                // }
                 filtered_raw_pose_cmd[i] = alpha1 * filtered_raw_pose_cmd[i] + (1.0-alpha1) * raw_pose_cmd[i];
                 current_pose_[i] = alpha2 * current_pose_[i] + (1.0-alpha2) * filtered_raw_pose_cmd[i];
               }
