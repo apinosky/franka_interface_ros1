@@ -300,7 +300,7 @@ class testGUI():
         self.disable_button(self.buttons.save)
         self.save_pub.publish()
         cprint("[GUI] "+"sending save message","grey","on_yellow")
-        threading.Timer( 5 , self.enable_button, args=[self.buttons.resume]).start() # blocks calling again for 5 seconds
+        threading.Timer( 5 , self.enable_button, args=[self.buttons.save]).start() # blocks calling again for 5 seconds
 
     def switch_to_pose_controller(self):
         self.disable_button(self.buttons.pose_ctrl)

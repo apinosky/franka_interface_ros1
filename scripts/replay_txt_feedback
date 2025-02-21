@@ -1,0 +1,516 @@
+#!/usr/bin/env python
+
+import rospy
+from franka_msgs.msg import ErrorRecoveryActionGoal
+from std_msgs.msg import Empty
+from std_srvs.srv import Empty as EmptyService
+from franka_interface_ros1.srv import GetStartState, PoseCmd, UpdateVel, UpdateState
+from termcolor import cprint
+import os
+import signal
+import argparse
+from geometry_msgs.msg import Pose, Twist, PoseStamped, WrenchStamped, TwistStamped,Twist, Point, Quaternion, Transform
+from sensor_msgs.msg import Image, JointState
+try:
+    from .utils import from_vector4,from_vector3, ws_conversion
+except:
+    from scripts.utils import from_vector4,from_vector3, ws_conversion
+import tf
+import numpy as np
+import time
+import copy
+from scipy.spatial.transform import Rotation
+from visualization_msgs.msg import Marker
+from std_msgs.msg import Empty, ColorRGBA, Header
+import matplotlib.pyplot as plt
+
+from img2traj import img2traj
+
+class replay_txt():
+    def __init__(self,rate=3,erase=False):
+
+        # params
+        self.states = 'xy'
+        self.check_states = 'xyz'
+        self.robot_lim = np.array([[-0.5, 0.5],[-1,1]]) # x,y
+        tray_center = np.array([[0.475],[0.]]) # x,y
+        offset = 0.2
+        self.tray_lim = tray_center+np.array([[-1.,1.],[-2,2]])*offset
+        # self.tray_lim = np.array([[0.325, 0.625], # x
+        #                      [-0.15, 0.15] # y
+        #                     ])
+        self.robot_ctrl_lim = np.array([[-1.25, 1.25], # x
+                                    [-1.25, 1.25] # y
+                                    ])
+        self.tray_ctrl_lim = np.array([[-0.1, 0.1], # x
+                                  [-0.1, 0.1] # y
+                                  ])
+        self.update_states(self.states,self.check_states)
+
+        # ros
+        rospy.init_node('replay_txt', anonymous=True)
+        self.rate = rospy.Rate(rate)
+        self.recover_pub = rospy.Publisher('/franka_control/error_recovery/goal',ErrorRecoveryActionGoal,queue_size=1) #,latch=True)
+        self.pause_pub = rospy.Publisher('/pause',Empty,queue_size=1)
+        self.save_pub = rospy.Publisher('/save',Empty,queue_size=1)
+        self.start_pose_controller = rospy.Publisher("/switch_to_pose_controller",Empty,queue_size=1)
+        self.start_vel_controller = rospy.Publisher("/switch_to_vel_controller",Empty,queue_size=1)
+        self.marker_pub = rospy.Publisher('/projection', Marker, queue_size=10)
+        self.marker_count = 0
+        self.reset_joints_pub = rospy.Publisher('/reset_joints',Empty,queue_size=1)
+        self.picture_joints_pub = rospy.Publisher('/picture_joints',Empty,queue_size=1)
+
+        self.recover_pub.publish()
+        if not erase:
+            time.sleep(0.5)
+            self.reset_joints_pub.publish()
+            time.sleep(3)
+        start_service = rospy.ServiceProxy('/klerg_start_pose', GetStartState)
+        self.start_callback(start_service())
+
+        self.pause = False
+        self.got_pose = False
+        self.got_img = False
+        self.end_traj = False
+
+        rospy.Subscriber('/pause',Empty,self.pause_callback)
+        rospy.Subscriber('/resume',Empty,self.resume_callback)
+        rospy.Subscriber('/usb_cam/image_raw',Image,self.image_callback)
+        rospy.Subscriber('/ee_pose',PoseStamped,self.pose_callback)
+        rospy.Subscriber('/save',Empty,self.traj_callback) # using an existing gui callback
+
+        self.switch_to_pose_controller()
+        while not self.got_pose or not self.got_img: 
+            self.rate.sleep()
+            print('waiting for robot pose and image')
+        print('ready')
+        
+    def image_callback(self,image_msg):
+        rospy.loginfo_once("got image")
+        self.cam_img = image_msg
+        self.got_img = True
+
+    def process_image_msg(self,image_msg,make_square=False):
+        tmp = np.frombuffer(image_msg.data, dtype=np.uint8).reshape(image_msg.height, image_msg.width, -1)
+        # tmp = np.flipud(tmp)
+        if make_square and image_msg.width > image_msg.height: # make image square
+            offset = int((image_msg.width-image_msg.height)/2)
+            tmp = tmp[:, offset:-offset,:]
+        tmp = tmp/255.0
+        return tmp
+
+    def pose_callback(self,pose_msg):
+        rospy.loginfo_once("got pose")
+        pos,full_pos = self.process_pose_msg(pose_msg.pose,desired=False)
+
+        self.latest_pose = full_pos
+        self.got_pose = True
+
+    def start_callback(self,msg):
+        rospy.loginfo_once("got start pose")
+        # joint_msg = rospy.wait_for_message('/joint_states',JointState)
+        # self.ee_loc = np.argwhere([x=='panda_joint7' for x in joint_msg.name]).squeeze()
+        # ee_state = joint_msg.position[self.ee_loc]
+        start_vel = Twist() # init with zeros
+        pos,full_pos = self.process_pose_msg(msg.start_pose,start_vel,init=True)
+        self.got_state = True
+
+    def traj_callback(self,msg):
+        self.end_traj = True
+
+    def pause_callback(self,msg):
+        # rospy.logwarn("got pause message")
+        self.pause = True
+
+    def resume_callback(self,msg):
+        # rospy.logwarn("got resume message")
+        self.pause = False
+
+    def switch_to_pose_controller(self):
+        self.start_pose_controller.publish()
+        rospy.wait_for_service('klerg_pose')
+        self.send_cmd = rospy.ServiceProxy('/klerg_pose', UpdateState)
+        self.recover_pub.publish()
+
+        cprint("[GUI] "+"switching to pose control","grey","on_yellow")
+
+    def switch_to_vel_controller(self):
+        self.start_vel_controller.publish()
+        rospy.wait_for_service('klerg_cmd')
+        self.send_cmd = rospy.ServiceProxy('/klerg_cmd', UpdateVel)
+        self.recover_pub.publish()
+        cprint("[GUI] "+"switching to velocity control","grey","on_yellow")
+
+    def update_states(self,states,check_states='xy'):
+        state_dict = {}
+        last_lower = 0
+        msg_order = 'xyzrpwbXYZRPWB'
+        for idx,s in enumerate(msg_order):
+            state_dict[s] = idx
+            if s.lower() == s:
+                last_lower = idx
+        out = []
+        non_vel_states = []
+        non_vel_idx = []
+        vel_states = []
+        for state_loc,key in enumerate(states):
+            idx = state_dict[key]
+            out.append(idx)
+            if idx <= last_lower:
+                non_vel_states.append(state_dict[key])
+                vel_states.append(state_dict[key.upper()])
+                non_vel_idx.append(state_loc)
+        self.states = states
+        self.check_idx = [msg_order.rfind(s) for s in check_states]
+        self.msg_states = out
+        self.full_msg_states = non_vel_states + vel_states
+        # self.non_vel_states = non_vel_states
+        # self.vel_states = vel_states
+        self.robot_full_lim = np.vstack([self.robot_lim[non_vel_idx],self.robot_ctrl_lim[non_vel_idx]])
+        self.tray_full_lim = np.vstack([self.tray_lim[non_vel_idx],self.tray_ctrl_lim[non_vel_idx]])
+        print(states,out)
+        return non_vel_idx
+
+    def check_goal_pos(self,pos):
+        while self.pause:
+            replay.rate.sleep()
+        # then run loop
+        at_center = False
+        num_tries = 100
+        attempt = 0
+        tray_pos =  ws_conversion(pos, self.robot_lim, self.tray_lim)
+        tmp_cmd = self.format_Pose_msg(tray_pos,tray=True)
+        _,desired_pos = self.process_pose_msg(tmp_cmd,desired=True)
+        pos_msg = self.send_cmd(tmp_cmd,-1)
+        while not rospy.is_shutdown() and (not at_center) and (attempt < num_tries):
+            while self.pause:
+                self.rate.sleep()
+            try:
+                pos_check = self.latest_pose.copy()
+                # check if it's at the test location
+                diff = pos_check-desired_pos
+                at_center = np.all(abs(diff) < 0.01)
+                if (not at_center):
+                    skip_cmd = False
+                    tmp_diff = np.abs(diff.copy())
+                    sum_xyz_diff = np.sum([d for d,s in zip(tmp_diff,self.check_states) if s in 'xyz'])
+                    sum_rpw_diff = np.sum([d for d,s in zip(tmp_diff,self.check_states) if s in 'rpw'])
+                    tmp_pos = tray_pos.copy()
+                    if not skip_cmd:
+                        if (sum_xyz_diff > 0.2): # distance is too far for single step
+                            # print('change pose')
+                            for idx,s in enumerate(self.check_states):
+                                if s in 'xyz':
+                                    tmp_pos[idx] = pos_check[idx] - np.clip(diff[idx],-0.1,0.1)
+                        if (sum_rpw_diff > 1.): # distance is too far for single step
+                            # print('change angle')
+                            for idx,s in enumerate(self.check_states):
+                                if s in 'rpw':
+                                    tmp_pos[idx] = pos_check[idx] - np.clip(diff[idx],-1.0,1.0)
+                        tmp_cmd = self.format_Pose_msg(tmp_pos,tray=True)
+                        pos_msg = self.send_cmd(tmp_cmd,-1)
+                    attempt += 1
+                    time.sleep(0.05)
+                    # print(attempt,diff,sum_xyz_diff,sum_rpw_diff,pos_check[w_idx],tray_pos[w_idx])
+            except: #  rospy.ServiceException as e:
+                self.pause_pub.publish()
+                self.pause = True
+                time.sleep(0.1)
+
+    def process_pose_msg(self,pose,vel=None,init=False,desired=True):
+
+        pos = from_vector3(pose.position)
+        quat = from_vector4(pose.orientation)
+
+        rot = Rotation.from_quat(quat).as_euler('xyz')
+        rot[0] = rot[0] % (2 * np.pi) # wrap btwn 0 and 2*pi
+        rot[1:] = ((rot[1:] + np.pi) % (2 * np.pi)) - np.pi # wrap btwn -pi and pi
+
+        if init:
+            self.rot_init = rot.copy()
+            self.pos_init = copy.copy(pose.position)
+
+        self.updateMarker(pos,rot,desired)
+
+        if vel is None:
+            lin_vel = np.zeros(3)
+            ang_vel = np.zeros(3)
+        else:
+            lin_vel = from_vector3(vel.linear)
+            ang_vel = from_vector3(vel.angular)
+
+
+        states = np.hstack([pos,rot,lin_vel,ang_vel])
+        # print(states)
+        return states[self.msg_states], states[self.check_idx]
+
+    def format_Twist_msg(self,vel):
+        vel = ws_conversion(vel, self.robot_ctrl_lim, self.tray_ctrl_lim)
+        vel = np.clip(vel,*np.array(self.tray_ctrl_lim).T)
+
+        cmd = Twist()
+        for val,key in zip(vel,self.states):
+            if key == 'x':
+                cmd.linear.x = val
+            elif key == 'y':
+                cmd.linear.y = val
+            elif key == 'z':
+                cmd.linear.z = val
+            elif key == 'r':
+                cmd.angular.x = val
+            elif key == 'p':
+                cmd.angular.y = val
+            elif key == 'w':
+                cmd.angular.z = val
+        return cmd
+
+    def format_Pose_msg(self,pose,tray=False):
+        if not tray:
+            pose = ws_conversion(pose, self.robot_lim, self.tray_lim)
+        cmd = Pose()
+        cmd.position = copy.copy(self.pos_init)
+        rot = self.rot_init.copy()
+        for val,key in zip(pose,self.states):
+            if key == 'x':
+                cmd.position.x = val
+            elif key == 'y':
+                cmd.position.y = val
+            elif key == 'z':
+                cmd.position.z = val
+            elif key == 'r':
+                rot[0] = val
+            elif key == 'p':
+                rot[1] = val
+            elif key == 'w':
+                rot[2] = val
+        quat = Rotation.from_euler('xyz',rot).as_quat()
+        cmd.orientation = Quaternion(*quat)
+        # error handling
+        quat_msg = cmd.orientation
+        quat = np.array([quat_msg.x , quat_msg.y, quat_msg.z, quat_msg.w])
+        valid = np.abs(1-np.linalg.norm(quat))<0.001
+        if not valid:
+            rospy.logerr('invalid quaternion')
+
+        return cmd
+
+    def updateMarker(self,pos,rot,desired=True):
+        # define sensor dirction
+        upVec = np.array([0,0,1])
+        r  = Rotation.from_euler('xyz',rot).as_matrix()
+        camDir = np.dot(r, upVec) # get direction of sensor z-axis
+        scale = pos[-1] / (camDir[-1] + 1e-5) # get z scaling to height of sensor
+
+        xyz = pos - scale * camDir
+
+        msg_pose = Pose(Point(*xyz),Quaternion(0,0,0,1.))
+
+        if desired:
+            color = ColorRGBA(0,0,1.,1.)
+        else:
+            color = ColorRGBA(1.,0,1.,1.)
+
+
+        robotMarker = Marker(header=Header(0,rospy.get_rostime(),"panda_link0"),
+                            ns="robot",id=self.marker_count,type=2,action=0,
+                            pose=msg_pose,scale=Point(0.005,0.005,0.01),
+                            color=color,lifetime=rospy.Duration(100))
+
+        try:
+            self.marker_pub.publish(robotMarker)
+        except: 
+            pass
+        self.marker_count+=1
+
+    def step(self,pose):
+        cmd = self.format_Pose_msg(pose)
+        pos,full_pos = self.process_pose_msg(cmd,desired=True)
+
+        try:
+            pos_msg = self.send_cmd(cmd,-1)
+        except rospy.ServiceException as e:
+            rospy.logwarn('pausing -- resolve the following ServiceException before resuming\nrospy.service.ServiceException:{}'.format(e))
+            self.pause_pub.publish()
+            self.pause = True
+            return False
+
+        if not pos_msg.success:
+            rospy.logwarn('pausing -- send resume message when motion error is resolved')
+            self.recover_pub.publish()
+            self.pause_pub.publish()
+            return False
+        return True
+
+    def capture_ws(self,save_name,img_fig=None): 
+        img = self.process_image_msg(self.cam_img)
+        img = np.rot90(img,k=-1,axes=(0,1))
+        if img_fig is None: 
+            fig,ax = plt.subplots(1,1,figsize=(5,5))
+            ax.axis('off')
+            ax.set_aspect('equal', adjustable='box')
+            plot = ax.imshow(img)
+            fig.tight_layout()
+            plt.show(block=False)
+            img_fig = [fig,ax,plot]
+        else: 
+            fig,ax,plot = img_fig
+            plot.set_data(img)
+
+        fig.savefig(save_name, bbox_inches='tight', pad_inches=0)
+
+        done = False
+        while not done: 
+            out = input("Press 'r' to retake picture or any other key to continue\n")
+            if out == 'r': 
+                img = self.process_image_msg(self.cam_img)
+                img = np.rot90(img,k=-1,axes=(0,1))
+                plot.set_data(img)
+                fig.canvas.draw_idle()
+                fig.canvas.flush_events()
+                fig.savefig(save_name, bbox_inches='tight', pad_inches=0)
+            else: 
+                done = True
+
+        return img_fig
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--save_path', type=str, default='/home/allie/franka_ws/src/franka_interface_ros1/results/', help='path to save info')
+    parser.add_argument('--obj_name', type=str, default='airplane', help='object save name')
+    parser.add_argument('--z_high', type=float, default=0.4, help='reset height')
+    parser.add_argument('--z_contact', type=float, default=0.292, help='contact height')
+    parser.add_argument('--erase', dest='erase', action='store_true',help='')
+    parser.set_defaults(erase=False)
+    parser.add_argument('--fast', dest='fast', action='store_true',help='')
+    parser.set_defaults(fast=False)
+    args, unknown = parser.parse_known_args()
+
+    lift = False
+    take_picture = True
+
+    if not os.path.exists(args.save_path):
+        os.makedirs(args.save_path)
+        
+    if args.erase:
+        args.z_contact += 0.02
+        rate = 6
+    else:
+        rate = 3
+
+    if args.fast: 
+        rate = 10
+
+    # setup node
+    replay = replay_txt(rate,args.erase)
+    use_vel = False
+    done = False 
+    img_count = 0
+    img_fig = None
+    fig = None
+
+    while not done: 
+        save_name = '{}{}_v{}.png'.format(args.save_path,args.obj_name,img_count)
+        replay.picture_joints_pub.publish()
+        time.sleep(5)
+        img_fig = replay.capture_ws(save_name,img_fig)
+        replay.reset_joints_pub.publish()
+        # get trajectory
+        try:
+            start_pose, traj, pts, width, height, done = img2traj(save_name)
+        except: 
+            done = True
+        if not done: 
+            np.savetxt(save_name.replace('.png','_traj.csv'),traj, delimiter=",")
+            np.savetxt(save_name.replace('.png','_points.csv'),pts, delimiter=",")
+            img_count += 1
+            
+            poses = np.clip(traj[:,:2],*replay.robot_lim.T) # poses only
+            replay.end_traj = False
+
+            # go to start pose (high z)
+            start_pose = np.zeros(2)
+            replay.pos_init.z = args.z_high
+            error = replay.step(start_pose)
+            replay.check_goal_pos(start_pose)
+            print('lowering ee')
+            if fig is not None: 
+                update_fig()
+
+            # go to start pose (low z)
+            replay.pos_init.z = args.z_contact
+            error = replay.step(start_pose)
+            replay.check_goal_pos(start_pose)
+            if fig is not None: 
+                update_fig()
+            time.sleep(1)
+            if fig is not None: 
+                update_fig()
+            error = replay.step(start_pose)
+            print('starting trajectory')
+
+            # plotting
+            if fig is None: 
+                fig,axs = plt.subplots(1,1)
+                traj_outline = axs.plot(*poses.T,zorder=1,marker='.')
+                axs.set_xlim(-width/2,width/2)
+                axs.set_ylim(-height/2,height/2)
+                axs.set_aspect('equal', adjustable='box')
+                current_pose = axs.plot(*start_pose,'ks',zorder=10)
+                plt.ion()
+                plt.show(block=False)
+
+                def update_fig(pose=None):
+                    if pose is not None: 
+                        current_pose[0].set_data(*pose)
+                    fig.canvas.draw_idle()
+                    fig.canvas.flush_events()
+            else: 
+                traj_outline[0].set_data(*poses.T)
+
+            update_fig()
+
+            # run trajectory
+            for idx,pose in enumerate(poses):
+                while replay.pause:
+                    replay.rate.sleep()
+                    if replay.end_traj: 
+                        break 
+                if replay.end_traj: 
+                    break
+                if lift and idx > 0: 
+                    dist = np.linalg.norm(poses[idx-1]-pose)
+                    print(idx,dist)
+                    if dist > 0.042:
+                        rospy.logwarn('lifting marker')
+                        replay.pos_init.z = args.z_high
+                        error = replay.step(pose)
+                        time.sleep(0.1)
+                        replay.check_goal_pos(pose)
+                        replay.pos_init.z = args.z_contact
+                error = replay.step(pose)
+                replay.rate.sleep()
+                # replay.check_goal_pos(pose)
+                update_fig(pose)
+
+                if rospy.is_shutdown():
+                    take_picture = False
+                    break
+
+            if not replay.end_traj:
+                # lift back up when done
+                replay.check_goal_pos(pose) # let arm come to rest before moving
+                time.sleep(1)
+                replay.pos_init.z = args.z_high
+                error = replay.step(pose)
+                time.sleep(2)
+
+            if not rospy.is_shutdown():
+                replay.recover_pub.publish()
+                replay.reset_joints_pub.publish()
+                time.sleep(4)
+
+    # cleanup
+    plt.close(img_fig[0])
+    plt.close(fig)
+
